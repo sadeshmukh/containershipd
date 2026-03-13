@@ -1,6 +1,18 @@
 package store
 
-import "time"
+import (
+	"errors"
+	"strings"
+	"time"
+)
+
+// ErrConflict is returned when an insert violates a unique constraint.
+var ErrConflict = errors.New("conflict")
+
+// isUniqueConstraint detects SQLite unique constraint violation errors.
+func isUniqueConstraint(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed")
+}
 
 // scanner abstracts *sql.Row and *sql.Rows for shared scan helpers.
 type scanner interface {

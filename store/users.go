@@ -43,6 +43,9 @@ func (s *Users) Create(p CreateUserParams) (*models.User, error) {
 		now, now,
 	)
 	if err != nil {
+		if isUniqueConstraint(err) {
+			return nil, ErrConflict
+		}
 		return nil, err
 	}
 	return s.Get(id)

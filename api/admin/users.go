@@ -61,6 +61,10 @@ func (h *UserHandler) Create(w http.ResponseWriter, r *http.Request) {
 		ExternalID: req.ExternalID,
 		Quota:      q,
 	})
+	if errors.Is(err, store.ErrConflict) {
+		httputil.Err(w, http.StatusConflict, "CONFLICT", "a user with this externalId already exists")
+		return
+	}
 	if err != nil {
 		httputil.ErrInternal(w, err)
 		return

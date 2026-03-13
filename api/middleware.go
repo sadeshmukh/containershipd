@@ -8,17 +8,23 @@ import (
 	"github.com/sadeshmukh/containershipd/httputil"
 )
 
-// AdminAuth validates the shared admin Bearer token.
+// AdminAuth validates the shared admin secret.
+// Accepts the key via X-Admin-Key header (preferred — proxies don't touch it)
+// or Authorization: Bearer <key> (fallback).
 func AdminAuth(secret string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			auth := r.Header.Get("Authorization")
-			if !strings.HasPrefix(auth, "Bearer ") {
-				httputil.Err(w, http.StatusUnauthorized, "UNAUTHORIZED", "missing bearer token")
+			token := r.Header.Get("X-Admin-Key")
+			if token == "" {
+				auth := r.Header.Get("Authorization")
+				token = strings.TrimPrefix(auth, "Bearer ")
+			}
+			if token == "" {
+				httputil.Err(w, http.StatusUnauthorized, "UNAUTHORIZED", "missing admin key")
 				return
 			}
-			if strings.TrimPrefix(auth, "Bearer ") != secret {
-				httputil.Err(w, http.StatusUnauthorized, "UNAUTHORIZED", "invalid token")
+			if token != secret {
+				httputil.Err(w, http.StatusUnauthorized, "UNAUTHORIZED", "invalid admin key")
 				return
 			}
 			next.ServeHTTP(w, r)

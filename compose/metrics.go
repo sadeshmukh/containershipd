@@ -65,7 +65,10 @@ func (c *Collector) collect(ctx context.Context) {
 	}
 
 	for _, d := range deployments {
-		svcs, err := collectForDeployment(ctx, d)
+		// Per-deployment timeout so one slow/hung container can't stall the whole loop.
+		dctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		svcs, err := collectForDeployment(dctx, d)
+		cancel()
 		if err != nil {
 			slog.Warn("metrics collect failed", "deployment", d.ID, "error", err)
 			continue

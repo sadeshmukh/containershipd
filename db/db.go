@@ -11,8 +11,11 @@ func Open(path string) (*sql.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	// SQLite supports one writer at a time; cap pool to prevent locking issues.
-	db.SetMaxOpenConns(1)
+	// WAL mode supports one writer + many concurrent readers on separate connections.
+	// SetMaxOpenConns(1) serialises ALL access through a single connection, causing
+	// the metrics goroutine and API handlers to deadlock waiting on each other.
+	db.SetMaxOpenConns(10)
+	db.SetMaxIdleConns(5)
 	if err := db.Ping(); err != nil {
 		return nil, err
 	}

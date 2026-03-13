@@ -138,7 +138,11 @@ func (h *DeploymentHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	go h.provision(context.Background(), d, req.Github.GithubToken)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+		defer cancel()
+		h.provision(ctx, d, req.Github.GithubToken)
+	}()
 
 	httputil.JSON(w, http.StatusAccepted, d)
 }
@@ -244,7 +248,9 @@ func (h *DeploymentHandler) Update(w http.ResponseWriter, r *http.Request) {
 
 	if d.Status == models.StatusRunning && (req.ResourceLimits != nil || req.Env != nil) {
 		go func() {
-			if err := h.composer.Reconfigure(context.Background(), updated); err != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			defer cancel()
+			if err := h.composer.Reconfigure(ctx, updated); err != nil {
 				slog.Warn("reconfigure failed", "deployment", d.ID, "error", err)
 				h.deployments.UpdateStatus(d.ID, models.StatusError, err.Error())
 			}
@@ -289,7 +295,9 @@ func (h *DeploymentHandler) Start(w http.ResponseWriter, r *http.Request) {
 	}
 	h.deployments.UpdateStatus(d.ID, models.StatusProvisioning, "")
 	go func() {
-		if err := h.composer.Start(context.Background(), d); err != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		if err := h.composer.Start(ctx, d); err != nil {
 			h.deployments.UpdateStatus(d.ID, models.StatusError, err.Error())
 			return
 		}
@@ -309,7 +317,9 @@ func (h *DeploymentHandler) Stop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	go func() {
-		if err := h.composer.Stop(context.Background(), d); err != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		if err := h.composer.Stop(ctx, d); err != nil {
 			slog.Warn("stop failed", "deployment", d.ID, "error", err)
 			return
 		}
@@ -324,7 +334,9 @@ func (h *DeploymentHandler) Restart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	go func() {
-		if err := h.composer.Restart(context.Background(), d); err != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		if err := h.composer.Restart(ctx, d); err != nil {
 			slog.Warn("restart failed", "deployment", d.ID, "error", err)
 		}
 	}()
@@ -338,12 +350,14 @@ func (h *DeploymentHandler) Redeploy(w http.ResponseWriter, r *http.Request) {
 	}
 	h.deployments.UpdateStatus(d.ID, models.StatusProvisioning, "")
 	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+		defer cancel()
 		token, err := h.deployments.GetGithubToken(d.ID)
 		if err != nil {
 			h.deployments.UpdateStatus(d.ID, models.StatusError, "failed to retrieve github token")
 			return
 		}
-		sha, err := h.composer.Redeploy(context.Background(), d, token)
+		sha, err := h.composer.Redeploy(ctx, d, token)
 		if err != nil {
 			h.deployments.UpdateStatus(d.ID, models.StatusError, err.Error())
 			return

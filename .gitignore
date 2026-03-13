@@ -1,0 +1,25 @@
+# Build output
+bin/
+*.exe
+
+# Environment — never commit secrets
+.env
+
+# SQLite database files
+*.db
+*.db-shm
+*.db-wal
+
+# Go module cache / vendor
+vendor/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~

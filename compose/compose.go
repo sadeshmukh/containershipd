@@ -39,12 +39,16 @@ func validateRepoURL(u string) error {
 
 // Manager manages Docker Compose deployments on disk.
 type Manager struct {
-	dataDir    string
-	baseDomain string
+	dataDir     string
+	hostDataDir string // host-side path corresponding to dataDir; used in Docker bind mounts
+	baseDomain  string
 }
 
-func NewManager(dataDir, baseDomain string) *Manager {
-	return &Manager{dataDir: dataDir, baseDomain: baseDomain}
+func NewManager(dataDir, hostDataDir, baseDomain string) *Manager {
+	if hostDataDir == "" {
+		hostDataDir = dataDir
+	}
+	return &Manager{dataDir: dataDir, hostDataDir: hostDataDir, baseDomain: baseDomain}
 }
 
 // ProjectName returns a stable, valid Docker Compose project name for a deployment ID.
@@ -75,6 +79,13 @@ func (m *Manager) sanitizedPath(id string) string {
 
 func (m *Manager) nginxConfPath(id string) string {
 	return filepath.Join(m.deployDir(id), "nginx.conf")
+}
+
+// hostNginxConfPath returns the host-side path for the nginx.conf file,
+// used in Docker bind mount specs. Differs from nginxConfPath when
+// containershipd itself runs inside Docker with a remapped volume.
+func (m *Manager) hostNginxConfPath(id string) string {
+	return filepath.Join(m.hostDataDir, "deployments", id, "nginx.conf")
 }
 
 func (m *Manager) envFile(id string) string {
@@ -296,6 +307,7 @@ func (m *Manager) writeDeploymentOverride(d *models.Deployment, services []strin
 	return writeOverride(
 		m.overrideFile(d.ID),
 		m.nginxConfPath(d.ID),
+		m.hostNginxConfPath(d.ID),
 		services,
 		d.ResourceLimits,
 		d.Proxy,
@@ -480,7 +492,7 @@ type composeOverride struct {
 }
 
 func writeOverride(
-	path, nginxConfPath string,
+	path, nginxConfPath, hostNginxConfPath string,
 	services []string,
 	limits models.ResourceLimits,
 	proxy *models.ProxyConfig,
@@ -548,7 +560,7 @@ func writeOverride(
 			Image:   "nginx:alpine",
 			Restart: "unless-stopped",
 			Networks: []string{"default", "csd-traefik"},
-			Volumes:  []string{nginxConfPath + ":/etc/nginx/nginx.conf:ro"},
+			Volumes:  []string{hostNginxConfPath + ":/etc/nginx/nginx.conf:ro"},
 			Labels: []string{
 				"traefik.enable=true",
 				"traefik.docker.network=csd-traefik",

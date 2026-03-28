@@ -54,7 +54,7 @@ func main() {
 	users := store.NewUsers(database)
 	deployments := store.NewDeployments(database, enc)
 	metrics := store.NewMetrics(database)
-	composer := compose.NewManager(cfg.DataDir, cfg.BaseDomain)
+	composer := compose.NewManager(cfg.DataDir, cfg.HostDataDir, cfg.BaseDomain)
 	collector := compose.NewCollector(deployments, metrics)
 	ghClient := ghclient.New()
 

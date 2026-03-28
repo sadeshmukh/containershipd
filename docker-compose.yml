@@ -7,7 +7,10 @@ services:
       # Mount the host Docker socket so containershipd can manage containers.
       - /var/run/docker.sock:/var/run/docker.sock
       # Persistent storage for the SQLite DB and deployment workdirs.
-      - containershipd_data:/var/lib/containershipd
+      # Must be a bind mount (not a named volume) so that the path is identical
+      # on both the host and inside the container — Docker needs the host path
+      # when mounting deployment files (e.g. nginx.conf) into sidecar containers.
+      - /var/lib/containershipd:/var/lib/containershipd
     env_file: .env
     restart: unless-stopped
     healthcheck:
@@ -16,6 +19,3 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
-
-volumes:
-  containershipd_data:

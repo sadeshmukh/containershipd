@@ -12,6 +12,7 @@ type Config struct {
 	EncryptionKey  [32]byte
 	DatabasePath   string
 	DataDir        string
+	HostDataDir    string // host path that maps to DataDir; used for Docker bind mounts when running in a container
 	JWTSecret      string
 	WebhookBaseURL string
 	BaseDomain     string
@@ -19,11 +20,13 @@ type Config struct {
 }
 
 func Load() *Config {
+	dataDir := getEnv("DATA_DIR", "/var/lib/containershipd")
 	cfg := &Config{
 		ListenAddr:     getEnv("LISTEN_ADDR", ":8080"),
 		AdminSecret:    requireEnv("ADMIN_SECRET"),
 		DatabasePath:   getEnv("DATABASE_PATH", "/var/lib/containershipd/containershipd.db"),
-		DataDir:        getEnv("DATA_DIR", "/var/lib/containershipd"),
+		DataDir:        dataDir,
+		HostDataDir:    getEnv("HOST_DATA_DIR", dataDir), // defaults to DataDir (bare-metal case)
 		JWTSecret:      requireEnv("JWT_SECRET"),
 		WebhookBaseURL: getEnv("WEBHOOK_BASE_URL", ""),
 		BaseDomain:     getEnv("BASE_DOMAIN", ""),

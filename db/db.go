@@ -46,7 +46,10 @@ func applyColumnMigrations(db *sql.DB) error {
 			}
 		}
 	}
-	return nil
+	// Index must be created after the column exists.
+	_, err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_deployments_proxy_subdomain
+		ON deployments(proxy_subdomain) WHERE proxy_subdomain IS NOT NULL`)
+	return err
 }
 
 const schema = `
@@ -100,8 +103,6 @@ CREATE TABLE IF NOT EXISTS metrics (
     recorded_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_deployments_proxy_subdomain
-    ON deployments(proxy_subdomain) WHERE proxy_subdomain IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_deployments_user_id  ON deployments(user_id);
 CREATE INDEX IF NOT EXISTS idx_deployments_status   ON deployments(status);
 CREATE INDEX IF NOT EXISTS idx_metrics_deployment   ON metrics(deployment_id);

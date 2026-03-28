@@ -258,6 +258,7 @@ func (m *Manager) Logs(ctx context.Context, d *models.Deployment, service string
 	args := []string{
 		"compose",
 		"-p", ProjectName(d.ID),
+		"--project-directory", m.repoDir(d.ID),
 		"-f", m.sanitizedPath(d.ID),
 		"-f", m.overrideFile(d.ID),
 		"logs", "--timestamps",
@@ -305,7 +306,12 @@ func (m *Manager) writeDeploymentOverride(d *models.Deployment, services []strin
 
 func (m *Manager) composeUp(ctx context.Context, id string) error {
 	proj := ProjectName(id)
-	args := []string{"compose", "-p", proj, "-f", m.sanitizedPath(id)}
+	args := []string{
+		"compose",
+		"-p", proj,
+		"--project-directory", m.repoDir(id),
+		"-f", m.sanitizedPath(id),
+	}
 	if _, err := os.Stat(m.overrideFile(id)); err == nil {
 		args = append(args, "-f", m.overrideFile(id))
 	}
@@ -318,7 +324,12 @@ func (m *Manager) composeUp(ctx context.Context, id string) error {
 }
 
 func (m *Manager) compose(ctx context.Context, id string, args ...string) ([]byte, error) {
-	fullArgs := []string{"compose", "-p", ProjectName(id), "-f", m.sanitizedPath(id)}
+	fullArgs := []string{
+		"compose",
+		"-p", ProjectName(id),
+		"--project-directory", m.repoDir(id),
+		"-f", m.sanitizedPath(id),
+	}
 	if _, err := os.Stat(m.overrideFile(id)); err == nil {
 		fullArgs = append(fullArgs, "-f", m.overrideFile(id))
 	}

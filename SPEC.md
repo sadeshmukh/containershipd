@@ -87,16 +87,22 @@ Authorization: Bearer <ADMIN_SECRET> ← fallback
     "storageLimitGb": 2.0
   },
   "env": { "KEY": "VALUE" },
-  "ports": [
-    { "service": "web", "hostPort": 12345, "containerPort": 80 }
-  ],
+  "proxy": {
+    "subdomain": "my-app",
+    "service": "web",
+    "port": 3000
+  },
   "createdAt": "RFC3339",
   "updatedAt": "RFC3339",
   "lastDeployedAt": "RFC3339 | omitted if never deployed"
 }
 ```
 
+`proxy` is omitted when no subdomain is configured. When present, Traefik routes `subdomain.BASE_DOMAIN` → nginx sidecar → `service:port` within the Compose network.
+
 Note: `env` values are stored AES-256-GCM encrypted and decrypted on read. The GitHub token is stored encrypted and never returned in any API response.
+
+**Port security**: containershipd strips all `ports` declarations from user Compose files before running them. No container ever publishes ports directly to the host. All external traffic must flow through Traefik on ports 80/443.
 
 ### Metrics snapshot
 ```json
@@ -208,7 +214,12 @@ Note: `bandwidthGbThisMonth` is tracked in the usage struct but currently always
     "memoryLimitMb": 512,  // default: 512
     "storageLimitGb": 2.0  // default: 2.0
   },
-  "env": { "DATABASE_URL": "postgres://..." }
+  "env": { "DATABASE_URL": "postgres://..." },
+  "proxy": {                             // omit for no public subdomain
+    "subdomain": "my-app",              // required; must be unique across all deployments
+    "service": "web",                   // default: "web"
+    "port": 3000                        // default: 80
+  }
 }
 
 // Response 202 — full deployment object at time of creation; status = "provisioning"
@@ -229,10 +240,18 @@ Note: `bandwidthGbThisMonth` is tracked in the usage struct but currently always
     "githubToken": "ghp_new..."
   },
   "resourceLimits": { "cpuLimit": 1.0, "memoryLimitMb": 1024, "storageLimitGb": 4 },
-  "env": { "KEY": "value" }
+  "env": { "KEY": "value" },
+  "proxy": {
+    "subdomain": "new-name",            // all fields optional; merged with current proxy config
+    "service": "api",
+    "port": 8080
+  },
+  "clearProxy": true                    // set true to remove proxy config entirely
 }
 ```
-If the deployment is `running` and `resourceLimits` or `env` are changed, a live reconfigure (`docker compose up -d` with new override) is triggered asynchronously.
+If the deployment is `running` and `resourceLimits`, `env`, `proxy`, or `clearProxy` are changed, a live reconfigure (`docker compose up -d` with new override) is triggered asynchronously.
+
+**Subdomain rules**: lowercase alphanumeric and hyphens only; no leading/trailing hyphens; 1–63 characters. Rejected with `409 CONFLICT` if already in use by another deployment. Rejected with `400 INVALID_REQUEST` if `BASE_DOMAIN` is not configured.
 
 #### Deployment status flow
 ```
@@ -355,6 +374,49 @@ Before `POST /admin/deployments` or `POST /admin/deployments/:id/start`, contain
 | `DATABASE_PATH` | no | `/var/lib/containershipd/containershipd.db` | SQLite file path |
 | `DATA_DIR` | no | `/var/lib/containershipd` | Root dir for deployment workdirs and SQLite DB |
 | `WEBHOOK_BASE_URL` | no | — | Public base URL for GitHub webhook registration (e.g. `https://myapp.com`). Required for `autoRedeploy` to work. |
+| `BASE_DOMAIN` | no | — | Base domain for deployment subdomains (e.g. `app.example.com`). Required for `proxy` to work. |
+| `ACME_EMAIL` | no | — | Email for Let's Encrypt registration. Required when `BASE_DOMAIN` is set. |
+
+---
+
+## Traefik Proxy
+
+### Overview
+When `BASE_DOMAIN` is configured, containershipd starts and manages a Traefik v3.2 container that handles all public HTTPS routing. No user container ever exposes ports to the host; Traefik is the sole listener on ports 80 and 443.
+
+### Architecture
+```
+Internet
+  │
+  ├─ :80  ──→ Traefik (HTTP → HTTPS redirect + ACME challenge)
+  └─ :443 ──→ Traefik
+                │
+                └─ csd-traefik Docker network
+                     │
+                     └─ csd-sidecar (nginx:alpine, injected per-deployment)
+                          │
+                          └─ default Compose network
+                               │
+                               └─ user's service (e.g. web:3000)
+```
+
+### Traefik management
+- On startup, containershipd writes `$DATA_DIR/traefik/docker-compose.yml` and runs `docker compose -p csd-traefik up -d`.
+- TLS certificates are obtained via Let's Encrypt HTTP-01 challenge; stored in `$DATA_DIR/traefik/letsencrypt/acme.json`.
+- The `csd-traefik` Docker network is created by the Traefik compose stack and referenced as an external network by deployment override files.
+
+### Per-deployment sidecar
+When a deployment has a `proxy` config, the generated `docker-compose.override.yml` injects a `csd-sidecar` service:
+- Image: `nginx:alpine`
+- nginx.conf written to `$DATA_DIR/deployments/{id}/nginx.conf`; proxies to `service:port` within the Compose network
+- Joined to both the default Compose network (to reach user services) and `csd-traefik` (for Traefik to reach it)
+- Traefik Docker labels configure routing: `Host(subdomain.BASE_DOMAIN)` → HTTPS → `csd-sidecar:80`
+- Fixed resource cap: 0.10 CPU / 64 MB (not counted against user quota)
+
+When `proxy` is absent, no sidecar is injected and no Traefik labels are set.
+
+### Port stripping
+containershipd sanitizes all user Compose files before running them, removing every `ports` mapping from every service. The sanitized copy is stored at `$DATA_DIR/deployments/{id}/docker-compose.sanitized.yml` and used for all Docker Compose operations. The original file in the repo is never modified.
 
 ---
 
@@ -362,12 +424,18 @@ Before `POST /admin/deployments` or `POST /admin/deployments/:id/start`, contain
 
 ```
 $DATA_DIR/
+├── traefik/
+│   ├── docker-compose.yml               ← Traefik compose (managed by containershipd)
+│   └── letsencrypt/
+│       └── acme.json                    ← Let's Encrypt certificate store (mode 0600)
 └── deployments/
     └── {deployment-id}/
         ├── repo/                        ← git clone target
         │   ├── docker-compose.yml
         │   └── ...
-        ├── docker-compose.override.yml  ← auto-generated resource limits (never commit)
+        ├── docker-compose.sanitized.yml ← port-stripped copy of user compose (never commit)
+        ├── docker-compose.override.yml  ← resource limits + optional nginx sidecar (never commit)
+        ├── nginx.conf                   ← generated nginx reverse-proxy config (when proxy set)
         └── .env                         ← decrypted env vars written at deploy time (never commit)
 ```
 

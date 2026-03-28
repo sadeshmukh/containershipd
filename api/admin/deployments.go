@@ -8,6 +8,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strconv"
 	"time"
 
@@ -20,6 +21,10 @@ import (
 	"github.com/sadeshmukh/containershipd/models"
 	"github.com/sadeshmukh/containershipd/store"
 )
+
+// subdomainRE validates subdomain slugs: lowercase alphanumeric + hyphens,
+// no leading/trailing hyphens, 1–63 characters.
+var subdomainRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 
 type DeploymentHandler struct {
 	cfg         *config.Config
@@ -61,6 +66,11 @@ func (h *DeploymentHandler) Create(w http.ResponseWriter, r *http.Request) {
 		} `json:"github"`
 		ResourceLimits models.ResourceLimits `json:"resourceLimits"`
 		Env            map[string]string     `json:"env"`
+		Proxy          *struct {
+			Subdomain string `json:"subdomain"`
+			Service   string `json:"service"`
+			Port      int    `json:"port"`
+		} `json:"proxy"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -89,6 +99,26 @@ func (h *DeploymentHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Env == nil {
 		req.Env = map[string]string{}
+	}
+
+	var proxyConfig *models.ProxyConfig
+	if req.Proxy != nil {
+		if err := h.validateProxy(w, req.Proxy.Subdomain, ""); err != nil {
+			return
+		}
+		svc := req.Proxy.Service
+		if svc == "" {
+			svc = "web"
+		}
+		port := req.Proxy.Port
+		if port == 0 {
+			port = 80
+		}
+		proxyConfig = &models.ProxyConfig{
+			Subdomain: req.Proxy.Subdomain,
+			Service:   svc,
+			Port:      port,
+		}
 	}
 
 	user, err := h.users.Get(req.UserID)
@@ -132,6 +162,7 @@ func (h *DeploymentHandler) Create(w http.ResponseWriter, r *http.Request) {
 		ResourceLimits: req.ResourceLimits,
 		Env:            req.Env,
 		WebhookSecret:  webhookSecret,
+		Proxy:          proxyConfig,
 	})
 	if err != nil {
 		httputil.ErrInternal(w, err)
@@ -157,13 +188,6 @@ func (h *DeploymentHandler) provision(ctx context.Context, d *models.Deployment,
 
 	h.deployments.SetDeployed(d.ID, sha)
 	h.deployments.UpdateStatus(d.ID, models.StatusRunning, "")
-
-	updated, _ := h.deployments.Get(d.ID)
-	if updated != nil {
-		if ports, err := h.composer.GetPortMappings(ctx, updated); err == nil && len(ports) > 0 {
-			h.deployments.SetPorts(d.ID, ports)
-		}
-	}
 
 	if d.Github.AutoRedeploy && h.cfg.WebhookBaseURL != "" {
 		webhookURL := h.cfg.WebhookBaseURL + "/webhooks/github/" + d.ID
@@ -222,6 +246,12 @@ func (h *DeploymentHandler) Update(w http.ResponseWriter, r *http.Request) {
 		} `json:"github"`
 		ResourceLimits *models.ResourceLimits `json:"resourceLimits"`
 		Env            map[string]string      `json:"env"`
+		Proxy          *struct {
+			Subdomain *string `json:"subdomain"`
+			Service   *string `json:"service"`
+			Port      *int    `json:"port"`
+		} `json:"proxy"`
+		ClearProxy bool `json:"clearProxy"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -229,7 +259,11 @@ func (h *DeploymentHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	params := store.UpdateDeploymentParams{Name: req.Name, Env: req.Env}
+	params := store.UpdateDeploymentParams{
+		Name:       req.Name,
+		Env:        req.Env,
+		ClearProxy: req.ClearProxy,
+	}
 	if req.Github != nil {
 		params.Branch = req.Github.Branch
 		params.ComposeFile = req.Github.ComposeFile
@@ -239,6 +273,35 @@ func (h *DeploymentHandler) Update(w http.ResponseWriter, r *http.Request) {
 	if req.ResourceLimits != nil {
 		params.ResourceLimits = req.ResourceLimits
 	}
+	if req.Proxy != nil {
+		// Merge with current proxy config if one exists.
+		current := d.Proxy
+		subdomain := ""
+		svc := "web"
+		port := 80
+		if current != nil {
+			subdomain = current.Subdomain
+			svc = current.Service
+			port = current.Port
+		}
+		if req.Proxy.Subdomain != nil {
+			subdomain = *req.Proxy.Subdomain
+		}
+		if req.Proxy.Service != nil {
+			svc = *req.Proxy.Service
+		}
+		if req.Proxy.Port != nil {
+			port = *req.Proxy.Port
+		}
+		if err := h.validateProxy(w, subdomain, d.ID); err != nil {
+			return
+		}
+		params.Proxy = &models.ProxyConfig{
+			Subdomain: subdomain,
+			Service:   svc,
+			Port:      port,
+		}
+	}
 
 	updated, err := h.deployments.Update(d.ID, params)
 	if err != nil {
@@ -246,7 +309,7 @@ func (h *DeploymentHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if d.Status == models.StatusRunning && (req.ResourceLimits != nil || req.Env != nil) {
+	if d.Status == models.StatusRunning && (req.ResourceLimits != nil || req.Env != nil || req.Proxy != nil || req.ClearProxy) {
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 			defer cancel()
@@ -452,6 +515,34 @@ func (h *DeploymentHandler) resolveDeployment(w http.ResponseWriter, r *http.Req
 		return nil, false
 	}
 	return d, true
+}
+
+// validateProxy validates subdomain format and uniqueness, writing an error
+// response if invalid. excludeID is the current deployment ID for updates
+// (pass "" on create).
+func (h *DeploymentHandler) validateProxy(w http.ResponseWriter, subdomain, excludeID string) error {
+	if subdomain == "" {
+		httputil.ErrBadRequest(w, "proxy.subdomain is required")
+		return errors.New("missing subdomain")
+	}
+	if !subdomainRE.MatchString(subdomain) {
+		httputil.ErrBadRequest(w, "proxy.subdomain must be lowercase alphanumeric with hyphens, no leading/trailing hyphens, max 63 chars")
+		return errors.New("invalid subdomain")
+	}
+	if h.cfg.BaseDomain == "" {
+		httputil.Err(w, http.StatusBadRequest, "INVALID_REQUEST", "proxy subdomains are not available: BASE_DOMAIN is not configured")
+		return errors.New("no base domain")
+	}
+	taken, err := h.deployments.CheckSubdomainTaken(subdomain, excludeID)
+	if err != nil {
+		httputil.ErrInternal(w, err)
+		return err
+	}
+	if taken {
+		httputil.Err(w, http.StatusConflict, "CONFLICT", "subdomain is already in use")
+		return errors.New("subdomain taken")
+	}
+	return nil
 }
 
 func checkQuota(q models.Quota, usage models.Usage, requested models.ResourceLimits) error {

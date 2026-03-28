@@ -1,6 +1,7 @@
 package api
 
 import (
+	"crypto/subtle"
 	"net/http"
 	"strings"
 
@@ -23,7 +24,7 @@ func AdminAuth(secret string) func(http.Handler) http.Handler {
 				httputil.Err(w, http.StatusUnauthorized, "UNAUTHORIZED", "missing admin key")
 				return
 			}
-			if token != secret {
+			if subtle.ConstantTimeCompare([]byte(token), []byte(secret)) != 1 {
 				httputil.Err(w, http.StatusUnauthorized, "UNAUTHORIZED", "invalid admin key")
 				return
 			}

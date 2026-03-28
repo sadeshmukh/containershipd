@@ -14,6 +14,8 @@ type Config struct {
 	DataDir        string
 	JWTSecret      string
 	WebhookBaseURL string
+	BaseDomain     string
+	ACMEEmail      string
 }
 
 func Load() *Config {
@@ -24,6 +26,8 @@ func Load() *Config {
 		DataDir:        getEnv("DATA_DIR", "/var/lib/containershipd"),
 		JWTSecret:      requireEnv("JWT_SECRET"),
 		WebhookBaseURL: getEnv("WEBHOOK_BASE_URL", ""),
+		BaseDomain:     getEnv("BASE_DOMAIN", ""),
+		ACMEEmail:      getEnv("ACME_EMAIL", ""),
 	}
 
 	encKey := requireEnv("ENCRYPTION_KEY")

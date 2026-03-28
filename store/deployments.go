@@ -16,6 +16,7 @@ const deploymentCols = `id, user_id, name, status, error_message,
     github_token_enc,
     resource_cpu_limit, resource_memory_limit_mb, resource_storage_limit_gb,
     env_enc, webhook_secret,
+    proxy_subdomain, proxy_service, proxy_port,
     created_at, updated_at, last_deployed_at`
 
 type Deployments struct {
@@ -38,6 +39,7 @@ type CreateDeploymentParams struct {
 	ResourceLimits models.ResourceLimits
 	Env            map[string]string
 	WebhookSecret  string
+	Proxy          *models.ProxyConfig
 }
 
 func (s *Deployments) Create(p CreateDeploymentParams) (*models.Deployment, error) {
@@ -63,6 +65,8 @@ func (s *Deployments) Create(p CreateDeploymentParams) (*models.Deployment, erro
 		autoRedeploy = 1
 	}
 
+	proxySubdomain, proxyService, proxyPort := proxyValues(p.Proxy)
+
 	_, err = s.db.Exec(`
 		INSERT INTO deployments (
 			id, user_id, name, status,
@@ -70,13 +74,15 @@ func (s *Deployments) Create(p CreateDeploymentParams) (*models.Deployment, erro
 			github_auto_redeploy, github_token_enc,
 			resource_cpu_limit, resource_memory_limit_mb, resource_storage_limit_gb,
 			env_enc, webhook_secret,
+			proxy_subdomain, proxy_service, proxy_port,
 			created_at, updated_at
-		) VALUES (?, ?, ?, 'provisioning', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, 'provisioning', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, p.UserID, p.Name,
 		p.RepoURL, p.Branch, p.ComposeFile,
 		autoRedeploy, tokenEnc,
 		p.ResourceLimits.CPULimit, p.ResourceLimits.MemoryLimitMb, p.ResourceLimits.StorageLimitGb,
 		envEnc, p.WebhookSecret,
+		proxySubdomain, proxyService, proxyPort,
 		now, now,
 	)
 	if err != nil {
@@ -94,8 +100,10 @@ func (s *Deployments) Get(id string) (*models.Deployment, error) {
 	if err != nil {
 		return nil, err
 	}
-	d.Ports, err = s.getPorts(id)
-	return d, err
+	if d.Env == nil {
+		d.Env = map[string]string{}
+	}
+	return d, nil
 }
 
 func (s *Deployments) GetGithubToken(id string) (string, error) {
@@ -140,13 +148,15 @@ func (s *Deployments) List(p ListDeploymentsParams) ([]*models.Deployment, error
 	}
 	defer rows.Close()
 
-	var deployments []*models.Deployment
+	deployments := make([]*models.Deployment, 0)
 	for rows.Next() {
 		d, err := s.scanDeployment(rows)
 		if err != nil {
 			return nil, err
 		}
-		d.Ports, _ = s.getPorts(d.ID)
+		if d.Env == nil {
+			d.Env = map[string]string{}
+		}
 		deployments = append(deployments, d)
 	}
 	return deployments, rows.Err()
@@ -181,25 +191,15 @@ func (s *Deployments) SetWebhookID(id string, webhookID int64) error {
 	return err
 }
 
-func (s *Deployments) SetPorts(id string, ports []models.Port) error {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
-	if _, err := tx.Exec(`DELETE FROM deployment_ports WHERE deployment_id = ?`, id); err != nil {
-		return err
-	}
-	for _, p := range ports {
-		if _, err := tx.Exec(
-			`INSERT INTO deployment_ports (deployment_id, service, host_port, container_port) VALUES (?, ?, ?, ?)`,
-			id, p.Service, p.HostPort, p.ContainerPort,
-		); err != nil {
-			return err
-		}
-	}
-	return tx.Commit()
+// CheckSubdomainTaken reports whether the given subdomain is already in use
+// by a deployment other than excludeID (pass "" to check without exclusion).
+func (s *Deployments) CheckSubdomainTaken(subdomain, excludeID string) (bool, error) {
+	var count int
+	err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM deployments WHERE proxy_subdomain = ? AND id != ?`,
+		subdomain, excludeID,
+	).Scan(&count)
+	return count > 0, err
 }
 
 type UpdateDeploymentParams struct {
@@ -210,6 +210,8 @@ type UpdateDeploymentParams struct {
 	ResourceLimits *models.ResourceLimits
 	Env            map[string]string
 	GithubToken    *string
+	Proxy          *models.ProxyConfig
+	ClearProxy     bool
 }
 
 func (s *Deployments) Update(id string, p UpdateDeploymentParams) (*models.Deployment, error) {
@@ -274,6 +276,15 @@ func (s *Deployments) Update(id string, p UpdateDeploymentParams) (*models.Deplo
 			return nil, err
 		}
 	}
+	if p.Proxy != nil || p.ClearProxy {
+		sub, svc, port := proxyValues(p.Proxy)
+		if _, err := s.db.Exec(
+			`UPDATE deployments SET proxy_subdomain = ?, proxy_service = ?, proxy_port = ?, updated_at = ? WHERE id = ?`,
+			sub, svc, port, now, id,
+		); err != nil {
+			return nil, err
+		}
+	}
 	return s.Get(id)
 }
 
@@ -289,26 +300,6 @@ func (s *Deployments) Delete(id string) error {
 	return nil
 }
 
-func (s *Deployments) getPorts(id string) ([]models.Port, error) {
-	rows, err := s.db.Query(
-		`SELECT service, host_port, container_port FROM deployment_ports WHERE deployment_id = ?`, id,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var ports []models.Port
-	for rows.Next() {
-		var p models.Port
-		if err := rows.Scan(&p.Service, &p.HostPort, &p.ContainerPort); err != nil {
-			return nil, err
-		}
-		ports = append(ports, p)
-	}
-	return ports, rows.Err()
-}
-
 func (s *Deployments) scanDeployment(sc scanner) (*models.Deployment, error) {
 	var d models.Deployment
 	var (
@@ -318,6 +309,9 @@ func (s *Deployments) scanDeployment(sc scanner) (*models.Deployment, error) {
 		githubTokenEnc sql.NullString
 		envEnc         sql.NullString
 		webhookSecret  sql.NullString
+		proxySubdomain sql.NullString
+		proxyService   sql.NullString
+		proxyPort      sql.NullInt64
 		lastDeployedAt sql.NullString
 		autoRedeploy   int
 		createdAt      string
@@ -331,6 +325,7 @@ func (s *Deployments) scanDeployment(sc scanner) (*models.Deployment, error) {
 		&githubTokenEnc,
 		&d.ResourceLimits.CPULimit, &d.ResourceLimits.MemoryLimitMb, &d.ResourceLimits.StorageLimitGb,
 		&envEnc, &webhookSecret,
+		&proxySubdomain, &proxyService, &proxyPort,
 		&createdAt, &updatedAt, &lastDeployedAt,
 	)
 	if err != nil {
@@ -361,6 +356,14 @@ func (s *Deployments) scanDeployment(sc scanner) (*models.Deployment, error) {
 		}
 	}
 
+	if proxySubdomain.Valid && proxySubdomain.String != "" {
+		d.Proxy = &models.ProxyConfig{
+			Subdomain: proxySubdomain.String,
+			Service:   proxyService.String,
+			Port:      int(proxyPort.Int64),
+		}
+	}
+
 	d.CreatedAt = parseTime(createdAt)
 	d.UpdatedAt = parseTime(updatedAt)
 	if lastDeployedAt.Valid {
@@ -370,3 +373,20 @@ func (s *Deployments) scanDeployment(sc scanner) (*models.Deployment, error) {
 
 	return &d, nil
 }
+
+// proxyValues unpacks a *ProxyConfig into SQL-safe values (nil when proxy is nil).
+func proxyValues(p *models.ProxyConfig) (subdomain, service any, port any) {
+	if p == nil {
+		return nil, nil, nil
+	}
+	svc := p.Service
+	if svc == "" {
+		svc = "web"
+	}
+	prt := p.Port
+	if prt == 0 {
+		prt = 80
+	}
+	return p.Subdomain, svc, prt
+}
+

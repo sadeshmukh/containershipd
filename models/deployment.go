@@ -27,10 +27,13 @@ type ResourceLimits struct {
 	StorageLimitGb float64 `json:"storageLimitGb"`
 }
 
-type Port struct {
-	Service       string `json:"service"`
-	HostPort      int    `json:"hostPort"`
-	ContainerPort int    `json:"containerPort"`
+// ProxyConfig configures the Traefik reverse proxy for a deployment.
+// When non-nil, the deployment gets a public subdomain routed to the
+// specified Compose service and container port.
+type ProxyConfig struct {
+	Subdomain string `json:"subdomain"`      // DNS slug, e.g. "my-app"
+	Service   string `json:"service"`        // Compose service name, default "web"
+	Port      int    `json:"port"`           // Container port, default 80
 }
 
 type Deployment struct {
@@ -41,8 +44,8 @@ type Deployment struct {
 	ErrorMessage   string            `json:"errorMessage,omitempty"`
 	Github         GithubConfig      `json:"github"`
 	ResourceLimits ResourceLimits    `json:"resourceLimits"`
-	Env            map[string]string `json:"env,omitempty"`
-	Ports          []Port            `json:"ports,omitempty"`
+	Env            map[string]string `json:"env"`
+	Proxy          *ProxyConfig      `json:"proxy,omitempty"`
 	WebhookSecret  string            `json:"-"`
 	CreatedAt      time.Time         `json:"createdAt"`
 	UpdatedAt      time.Time         `json:"updatedAt"`

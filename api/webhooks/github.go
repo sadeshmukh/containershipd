@@ -40,7 +40,8 @@ func (h *GithubHandler) Handle(w http.ResponseWriter, r *http.Request) {
 
 	d, err := h.deployments.Get(deploymentID)
 	if errors.Is(err, store.ErrNotFound) {
-		http.NotFound(w, r)
+		// Return 200 to avoid revealing whether a deployment ID is valid.
+		w.WriteHeader(http.StatusOK)
 		return
 	}
 	if err != nil {
@@ -59,13 +60,16 @@ func (h *GithubHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate HMAC signature.
-	if d.WebhookSecret != "" {
-		sig := r.Header.Get("X-Hub-Signature-256")
-		if !validateSignature(body, d.WebhookSecret, sig) {
-			http.Error(w, "invalid signature", http.StatusUnauthorized)
-			return
-		}
+	// Validate HMAC signature — always required.
+	if d.WebhookSecret == "" {
+		slog.Error("webhook deployment has no secret configured", "deployment", deploymentID)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	sig := r.Header.Get("X-Hub-Signature-256")
+	if !validateSignature(body, d.WebhookSecret, sig) {
+		http.Error(w, "invalid signature", http.StatusUnauthorized)
+		return
 	}
 
 	var event pushEvent
@@ -95,6 +99,14 @@ func (h *GithubHandler) Handle(w http.ResponseWriter, r *http.Request) {
 
 		h.deployments.UpdateStatus(d.ID, models.StatusProvisioning, "")
 
+		// Re-fetch to pick up any config changes made after the request was received.
+		current, err := h.deployments.Get(d.ID)
+		if err != nil {
+			slog.Error("webhook redeploy: failed to re-fetch deployment", "deployment", d.ID)
+			h.deployments.UpdateStatus(d.ID, models.StatusError, "failed to re-fetch deployment")
+			return
+		}
+
 		token, err := h.deployments.GetGithubToken(d.ID)
 		if err != nil || token == "" {
 			slog.Error("webhook redeploy: failed to get token", "deployment", d.ID)
@@ -102,7 +114,7 @@ func (h *GithubHandler) Handle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		sha, err := h.composer.Redeploy(ctx, d, token)
+		sha, err := h.composer.Redeploy(ctx, current, token)
 		if err != nil {
 			slog.Error("webhook redeploy failed", "deployment", d.ID, "error", err)
 			h.deployments.UpdateStatus(d.ID, models.StatusError, err.Error())

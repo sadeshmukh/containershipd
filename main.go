@@ -17,6 +17,7 @@ import (
 	"github.com/sadeshmukh/containershipd/db"
 	"github.com/sadeshmukh/containershipd/ghclient"
 	"github.com/sadeshmukh/containershipd/store"
+	"github.com/sadeshmukh/containershipd/traefik"
 )
 
 func main() {
@@ -53,9 +54,20 @@ func main() {
 	users := store.NewUsers(database)
 	deployments := store.NewDeployments(database, enc)
 	metrics := store.NewMetrics(database)
-	composer := compose.NewManager(cfg.DataDir)
+	composer := compose.NewManager(cfg.DataDir, cfg.BaseDomain)
 	collector := compose.NewCollector(deployments, metrics)
 	ghClient := ghclient.New()
+
+	// Start Traefik when a base domain is configured. Non-fatal: deployments
+	// without a proxy still work if Traefik is unavailable.
+	if cfg.BaseDomain != "" {
+		tm := traefik.New(cfg.DataDir, cfg.ACMEEmail)
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		if err := tm.EnsureRunning(ctx); err != nil {
+			slog.Warn("traefik startup failed — subdomain routing will be unavailable", "error", err)
+		}
+		cancel()
+	}
 
 	go collector.Run(context.Background())
 

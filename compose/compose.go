@@ -305,14 +305,12 @@ func (m *Manager) writeDeploymentOverride(d *models.Deployment, services []strin
 
 func (m *Manager) composeUp(ctx context.Context, id string) error {
 	proj := ProjectName(id)
-	cmd := exec.CommandContext(ctx, "docker", "compose",
-		"-p", proj,
-		"-f", m.sanitizedPath(id),
-		"-f", m.overrideFile(id),
-		"--env-file", m.envFile(id),
-		"up", "-d", "--build", "--remove-orphans",
-	)
-	out, err := cmd.CombinedOutput()
+	args := []string{"compose", "-p", proj, "-f", m.sanitizedPath(id)}
+	if _, err := os.Stat(m.overrideFile(id)); err == nil {
+		args = append(args, "-f", m.overrideFile(id))
+	}
+	args = append(args, "--env-file", m.envFile(id), "up", "-d", "--build", "--remove-orphans")
+	out, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("compose up: %s: %w", out, err)
 	}
@@ -320,11 +318,9 @@ func (m *Manager) composeUp(ctx context.Context, id string) error {
 }
 
 func (m *Manager) compose(ctx context.Context, id string, args ...string) ([]byte, error) {
-	fullArgs := []string{
-		"compose",
-		"-p", ProjectName(id),
-		"-f", m.sanitizedPath(id),
-		"-f", m.overrideFile(id),
+	fullArgs := []string{"compose", "-p", ProjectName(id), "-f", m.sanitizedPath(id)}
+	if _, err := os.Stat(m.overrideFile(id)); err == nil {
+		fullArgs = append(fullArgs, "-f", m.overrideFile(id))
 	}
 	fullArgs = append(fullArgs, args...)
 	return exec.CommandContext(ctx, "docker", fullArgs...).CombinedOutput()
@@ -348,6 +344,7 @@ func sanitizeComposeFile(srcPath, dstPath string) error {
 		for name, svcAny := range services {
 			if svc, ok := svcAny.(map[string]any); ok {
 				delete(svc, "ports")
+				delete(svc, "container_name") // prevent cross-deployment name conflicts
 				services[name] = svc
 			}
 		}

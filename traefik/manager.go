@@ -75,6 +75,8 @@ func (m *Manager) writeComposeFile(path, letsencryptDir string) error {
       - "--certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web"
       - "--certificatesresolvers.letsencrypt.acme.email=%s"
       - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
+    environment:
+      - DOCKER_API_VERSION=1.41
     ports:
       - "80:80"
       - "443:443"

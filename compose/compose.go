@@ -257,6 +257,20 @@ func (m *Manager) Teardown(ctx context.Context, d *models.Deployment) error {
 			// Log but don't fail — containers may already be gone.
 			slog.Warn("compose down had errors", "deployment", d.ID, "output", string(out))
 		}
+	} else {
+		// Sanitized compose file doesn't exist (failed before or during clone).
+		// Fall back to killing any containers that carry the project label.
+		proj := ProjectName(d.ID)
+		out, err := exec.CommandContext(ctx, "docker", "ps", "-aq",
+			"--filter", "label=com.docker.compose.project="+proj,
+		).Output()
+		if err == nil && len(strings.TrimSpace(string(out))) > 0 {
+			ids := strings.Fields(strings.TrimSpace(string(out)))
+			rmArgs := append([]string{"rm", "-f"}, ids...)
+			if rmOut, err := exec.CommandContext(ctx, "docker", rmArgs...).CombinedOutput(); err != nil {
+				slog.Warn("docker rm fallback had errors", "deployment", d.ID, "output", string(rmOut))
+			}
+		}
 	}
 	return os.RemoveAll(m.deployDir(d.ID))
 }

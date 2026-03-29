@@ -61,7 +61,7 @@ func (m *Manager) EnsureRunning(ctx context.Context) error {
 func (m *Manager) writeComposeFile(path, letsencryptDir string) error {
 	content := fmt.Sprintf(`services:
   traefik:
-    image: traefik:v3.2
+    image: traefik:v3.6
     restart: unless-stopped
     command:
       - "--providers.docker=true"
@@ -75,8 +75,6 @@ func (m *Manager) writeComposeFile(path, letsencryptDir string) error {
       - "--certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web"
       - "--certificatesresolvers.letsencrypt.acme.email=%s"
       - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
-    environment:
-      - DOCKER_API_VERSION=1.41
     ports:
       - "80:80"
       - "443:443"
